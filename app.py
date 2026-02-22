@@ -21,7 +21,7 @@ def load_config():
     """加载配置，支持环境变量和默认值"""
     # Telegram API 配置（从环境变量获取）
     api_id = os.getenv('TG_API_ID', '37132348')
-    api_hash = os.getenv('TG_API_HASH', 'abee9b9d7f75cff36be8052f9519cb5b')
+    api_hash = os.getenv('TG_API_HASH', 'abeefb9d7f75cff36be8052f9519cb5b')
     bot_token = os.getenv('TG_BOT_TOKEN', '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA')
     
     # 频道配置（从环境变量获取，支持多个源频道）
