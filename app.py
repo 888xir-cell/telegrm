@@ -6,10 +6,10 @@ from threading import Thread
 from flask import Flask
 from telethon import TelegramClient, events, Button
 
-# --- 1. Render 健康检查 ---
+# --- 1. Render 强制唤醒接口 ---
 server = Flask('')
 @server.route('/')
-def home(): return "Bot is running!"
+def home(): return "Bot is Heartbeating!" # 配合 UptimeRobot 使用，实现永不休眠
 def run_flask(): server.run(host='0.0.0.0', port=10000)
 
 # --- 2. 基础配置 ---
@@ -24,36 +24,34 @@ config = {
     "source_channels": ["@dashijian09", "@xoxokrk"], 
     "target_channel": "@SoutheastAsianrevelations", 
     "ad_text": "🎀欢迎订阅频道： 投稿/商务@BBGS1688",
-    "is_running": True,
+    "is_running": True, # 默认为 True，重启不重置
     "waiting_action": None 
 }
 
-client = TelegramClient('ace_final_v8', API_ID, API_HASH)
+client = TelegramClient('ace_final_v9', API_ID, API_HASH)
 
 # --- 3. 工具函数 ---
 def format_username(input_str):
     name = input_str.strip()
-    if 't.me/' in name:
-        name = name.split('t.me/')[-1]
-    name = name.replace('@', '')
-    return f"@{name}"
+    if 't.me/' in name: name = name.split('t.me/')[-1]
+    return f"@{name.replace('@', '')}"
 
 def clean_message_content(text):
     if not text: return ""
     lines = text.split('\n')
     filtered_lines = [line for line in lines if not any(word in line for word in ["关注", "频道", "投稿", ">>"])]
     text = '\n'.join(filtered_lines)
-    text = re.sub(r'https?://\S+|t\.me/\S+', '', text)
-    return text.strip()
+    return re.sub(r'https?://\S+|t\.me/\S+', '', text).strip()
 
 # --- 4. 菜单界面 ---
 async def send_main_menu(chat_id):
     status = "✅ 运行中" if config['is_running'] else "🛑 已暂停"
-    text = (f"🤖 **ACE 搬运机器人后台**\n\n"
+    text = (f"🤖 **ACE 搬运机器人 (增强版)**\n\n"
             f"📈 状态: {status}\n"
             f"📡 监听: `{', '.join(config['source_channels'])}`\n"
             f"🎯 目标: `{config['target_channel']}`\n\n"
-            f"📝 广告后缀: \n{config['ad_text']}")
+            f"📝 广告后缀: \n{config['ad_text']}\n\n"
+            f"⚠️ *如果点击没反应，请稍等10秒唤醒服务器*")
     
     buttons = [
         [Button.inline("➕ 添加源频道", b"add_src"), Button.inline("➖ 删除源频道", b"del_src")],
@@ -62,49 +60,22 @@ async def send_main_menu(chat_id):
     ]
     await client.send_message(chat_id, text, buttons=buttons)
 
-# --- 5. 核心搬运逻辑 (修复 'caption' 报错点) ---
-@client.on(events.NewMessage())
-async def forwarder(event):
-    if not config['is_running'] or event.is_private: return
-    
-    try:
-        chat = await event.get_chat()
-        current_chat = f"@{chat.username}" if hasattr(chat, 'username') and chat.username else str(event.chat_id)
-        
-        if current_chat in config['source_channels']:
-            # 兼容性处理：优先取 text，没有则取 caption，再没有则为空
-            raw_text = event.message.message or "" # 纯文本消息内容在此
-            if not raw_text and hasattr(event.message, 'caption'):
-                raw_text = event.message.caption or "" # 媒体消息内容在此
-            
-            cleaned = clean_message_content(raw_text)
-            final = f"{cleaned}\n\n{config['ad_text']}"
-            
-            # 使用 parse_mode='md' 确保蓝色链接显示
-            if event.message.media:
-                await client.send_file(config['target_channel'], event.message.media, caption=final, parse_mode='md')
-            else:
-                await client.send_message(config['target_channel'], final, parse_mode='md')
-                
-            logger.info(f"📤 搬运成功: {current_chat} -> {config['target_channel']}")
-    except Exception as e:
-        logger.error(f"❌ 搬运报错: {e}")
-
-# --- 6. 交互处理 ---
+# --- 5. 交互处理 (修复点击无反应问题) ---
 @client.on(events.CallbackQuery())
 async def callback_handler(event):
-    if event.data == b"toggle":
+    action = event.data.decode()
+    if action == "toggle":
         config['is_running'] = not config['is_running']
         await send_main_menu(event.chat_id)
-    elif event.data in [b"edit_ad", b"add_src", b"del_src", b"edit_target"]:
-        config['waiting_action'] = event.data.decode()
+    elif action in ["edit_ad", "add_src", "del_src", "edit_target"]:
+        config['waiting_action'] = action
         prompts = {
-            "edit_ad": "✍️ 请发送新的**广告后缀**：",
+            "edit_ad": "✍️ 请直接发送新的**广告后缀**：",
             "add_src": "📡 请发送源频道链接或 @用户名：",
             "del_src": "➖ 请发送要删除的源频道用户名：",
             "edit_target": "🎯 请发送新的**目标频道**用户名："
         }
-        await event.respond(prompts[config['waiting_action']])
+        await event.respond(prompts[action])
 
 @client.on(events.NewMessage())
 async def manager_input(event):
@@ -112,25 +83,47 @@ async def manager_input(event):
     action = config.get('waiting_action')
     if not action: return
 
-    if action == "edit_ad":
-        config['ad_text'] = event.text
-        await event.respond("✅ 广告语已更新")
-    elif action == "add_src":
-        new_channel = format_username(event.text)
-        if new_channel not in config['source_channels']:
-            config['source_channels'].append(new_channel)
-            await event.respond(f"✅ 已添加监听: {new_channel}")
-    elif action == "del_src":
-        target = format_username(event.text)
-        if target in config['source_channels']:
-            config['source_channels'].remove(target)
-            await event.respond(f"🗑️ 已删除监听: {target}")
-    elif action == "edit_target":
-        config['target_channel'] = format_username(event.text)
-        await event.respond(f"✅ 目标频道已更换为: {config['target_channel']}")
+    try:
+        if action == "edit_ad":
+            config['ad_text'] = event.text
+            await event.respond("✅ 广告语已更新")
+        elif action == "add_src":
+            new_channel = format_username(event.text)
+            if new_channel not in config['source_channels']:
+                config['source_channels'].append(new_channel)
+                await event.respond(f"✅ 已添加监听: {new_channel}")
+        elif action == "edit_target":
+            config['target_channel'] = format_username(event.text)
+            await event.respond(f"✅ 目标频道已更换为: {config['target_channel']}")
+        
+        config['waiting_action'] = None
+        await send_main_menu(event.chat_id)
+    except Exception as e:
+        logger.error(f"Manager input error: {e}")
+
+# --- 6. 核心搬运逻辑 ---
+@client.on(events.NewMessage())
+async def forwarder(event):
+    if not config['is_running'] or event.is_private: return
+    try:
+        chat = await event.get_chat()
+        current_chat = f"@{chat.username}" if hasattr(chat, 'username') and chat.username else str(event.chat_id)
+        
+        if current_chat in config['source_channels']:
+            raw_text = event.message.message or ""
+            if not raw_text and hasattr(event.message, 'caption'):
+                raw_text = event.message.caption or ""
             
-    config['waiting_action'] = None
-    await send_main_menu(event.chat_id)
+            cleaned = clean_message_content(raw_text)
+            final = f"{cleaned}\n\n{config['ad_text']}"
+            
+            if event.message.media:
+                await client.send_file(config['target_channel'], event.message.media, caption=final, parse_mode='md')
+            else:
+                await client.send_message(config['target_channel'], final, parse_mode='md')
+            logger.info(f"📤 搬运成功: {current_chat} -> {config['target_channel']}")
+    except Exception as e:
+        logger.error(f"❌ 搬运报错: {e}")
 
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
@@ -139,7 +132,7 @@ async def start(event):
 async def main():
     Thread(target=run_flask).start()
     await client.start(bot_token=BOT_TOKEN)
-    logger.info("✅ 机器人全功能上线 (已修复文本搬运报错)")
+    logger.info("✅ 机器人全功能上线 (强制激活运行模式)")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
