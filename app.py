@@ -12,7 +12,7 @@ server = Flask('')
 def home(): return "Bot is running!"
 def run_flask(): server.run(host='0.0.0.0', port=10000)
 
-# --- 2. 配置与初始化 ---
+# --- 2. 基础配置 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -20,20 +20,19 @@ API_ID = int(os.getenv('TG_API_ID', '37132348'))
 API_HASH = os.getenv('TG_API_HASH', 'abeefb9d7f75cff36be8052f9519cb5b')
 BOT_TOKEN = os.getenv('TG_BOT_TOKEN', '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA')
 
-# 核心配置存储
 config = {
     "source_channels": ["@dashijian09"], 
     "target_channel": "@SoutheastAsianrevelations", 
-    "ad_text": "✨ 关注我的频道获取更多资讯！",
+    "ad_text": "🎀欢迎订阅频道： 投稿/商务@BBGS1688",
     "is_running": True,
     "waiting_action": None 
 }
 
-client = TelegramClient('ace_pro_v6', API_ID, API_HASH)
+client = TelegramClient('ace_final_v7', API_ID, API_HASH)
 
 # --- 3. 工具函数 ---
 def format_username(input_str):
-    """自动将链接或纯文字转换为 @username 格式"""
+    """处理输入：将链接自动转化为 @username 格式"""
     name = input_str.strip()
     if 't.me/' in name:
         name = name.split('t.me/')[-1]
@@ -41,22 +40,22 @@ def format_username(input_str):
     return f"@{name}"
 
 def clean_message_content(text):
+    """清洗逻辑：剔除原频道的引流信息"""
     if not text: return ""
     lines = text.split('\n')
     filtered_lines = [line for line in lines if not any(word in line for word in ["关注", "频道", "投稿", ">>"])]
     text = '\n'.join(filtered_lines)
-    text = re.sub(r'@\w+', '', text)
     text = re.sub(r'https?://\S+|t\.me/\S+', '', text)
     return text.strip()
 
-# --- 4. 增强版菜单界面 ---
+# --- 4. 菜单界面 ---
 async def send_main_menu(chat_id):
     status = "✅ 运行中" if config['is_running'] else "🛑 已暂停"
     text = (f"🤖 **ACE 搬运机器人后台**\n\n"
             f"📈 状态: {status}\n"
             f"📡 监听: `{', '.join(config['source_channels'])}`\n"
             f"🎯 目标: `{config['target_channel']}`\n\n"
-            f"📝 广告后缀: `{config['ad_text']}`")
+            f"📝 广告后缀: \n{config['ad_text']}")
     
     buttons = [
         [Button.inline("➕ 添加源频道", b"add_src"), Button.inline("➖ 删除源频道", b"del_src")],
@@ -65,8 +64,7 @@ async def send_main_menu(chat_id):
     ]
     await client.send_message(chat_id, text, buttons=buttons)
 
-# --- 5. 事件处理逻辑 ---
-
+# --- 5. 交互处理 ---
 @client.on(events.CallbackQuery())
 async def callback_handler(event):
     if event.data == b"toggle":
@@ -77,7 +75,7 @@ async def callback_handler(event):
         await event.respond("✍️ 请发送新的**广告后缀**：")
     elif event.data == b"add_src":
         config['waiting_action'] = "add_src"
-        await event.respond("📡 请发送源频道（支持链接或 @用户名）：")
+        await event.respond("📡 请发送源频道链接或 @用户名：")
     elif event.data == b"del_src":
         config['waiting_action'] = "del_src"
         await event.respond("➖ 请发送要删除的源频道用户名：")
@@ -95,12 +93,10 @@ async def manager_input(event):
         config['ad_text'] = event.text
         await event.respond("✅ 广告语已更新")
     elif action == "add_src":
-        new_channel = format_username(event.text) # 自动识别格式
+        new_channel = format_username(event.text)
         if new_channel not in config['source_channels']:
             config['source_channels'].append(new_channel)
             await event.respond(f"✅ 已添加监听: {new_channel}")
-        else:
-            await event.respond("⚠️ 频道已在列表中")
     elif action == "del_src":
         target = format_username(event.text)
         if target in config['source_channels']:
@@ -113,29 +109,29 @@ async def manager_input(event):
     config['waiting_action'] = None
     await send_main_menu(event.chat_id)
 
-# --- 6. 核心搬运监听 (带诊断功能) ---
+# --- 6. 核心搬运逻辑 (补全 Markdown 解析) ---
 @client.on(events.NewMessage())
 async def forwarder(event):
     if not config['is_running'] or event.is_private: return
     
     try:
         chat = await event.get_chat()
-        # 日志诊断：打印所有听到的消息来源
         current_chat = f"@{chat.username}" if hasattr(chat, 'username') and chat.username else str(event.chat_id)
-        logger.info(f"📡 监听到频道消息: {current_chat}") 
         
         if current_chat in config['source_channels']:
             raw_text = event.message.text or event.message.caption or ""
             cleaned = clean_message_content(raw_text)
+            # 拼接广告后缀
             final = f"{cleaned}\n\n{config['ad_text']}"
             
+            # 使用 parse_mode='md' 确保 @用户名 能够自动识别为蓝色链接
             if event.message.media:
-                await client.send_file(config['target_channel'], event.message.media, caption=final)
+                await client.send_file(config['target_channel'], event.message.media, caption=final, parse_mode='md')
             else:
-                await client.send_message(config['target_channel'], final)
-            logger.info(f"📤 成功从 {current_chat} 搬运到 {config['target_channel']}")
+                await client.send_message(config['target_channel'], final, parse_mode='md')
+            logger.info(f"📤 搬运成功: {current_chat} -> {config['target_channel']}")
     except Exception as e:
-        logger.error(f"❌ 搬运过程出错: {e}")
+        logger.error(f"❌ 搬运出错: {e}")
 
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
@@ -144,7 +140,7 @@ async def start(event):
 async def main():
     Thread(target=run_flask).start()
     await client.start(bot_token=BOT_TOKEN)
-    logger.info("✅ 机器人全功能增强版已上线")
+    logger.info("✅ 机器人全功能上线 (已支持蓝色链接解析)")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
