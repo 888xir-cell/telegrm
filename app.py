@@ -1,126 +1,99 @@
-#!/usr/bin/env python3
-"""
-Telegram 频道搬运机器人 - 可配置版本
-"""
-
 import os
 import asyncio
 import logging
-import sys
 import re
-from datetime import datetime
+from telethon import TelegramClient, events, Button
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+# --- 基础配置 ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def load_config():
-    """加载配置，支持环境变量和默认值"""
-    # Telegram API 配置（从环境变量获取）
-    api_id = os.getenv('TG_API_ID', '37132348')
-    api_hash = os.getenv('TG_API_HASH', 'abeefb9d7f75cff36be8052f9519cb5b')
-    bot_token = os.getenv('TG_BOT_TOKEN', '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA')
+# 从环境变量获取凭证
+API_ID = int(os.getenv('TG_API_ID', '37132348'))
+API_HASH = os.getenv('TG_API_HASH', 'abeefb9d7f75cff36be8052f9519cb5b')
+BOT_TOKEN = os.getenv('TG_BOT_TOKEN', '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA')
+
+# 机器人运行配置
+config = {
+    "source_channels": ["@dashijian09"], # 监听的频道
+    "target_channel": "@SoutheastAsianrevelations", # 目标频道
+    "ad_text": "欢迎关注 @SoutheastAsianrevelations 获取更多精彩内容！",
+    "block_words": [], # 初始设为空，防止误杀导致无法搬运
+    "is_running": True
+}
+
+client = TelegramClient('ace_transfer_session', API_ID, API_HASH)
+
+# --- 菜单界面模块 ---
+async def send_main_menu(chat_id):
+    status = "✅ 运行中" if config['is_running'] else "🛑 已暂停"
+    text = (f"🤖 **ACE 搬运机器人管理后台**\n\n"
+            f"📈 **当前状态**: {status}\n"
+            f"📢 **监听频道**: `{', '.join(config['source_channels'])}`\n"
+            f"🎯 **目标频道**: `{config['target_channel']}`\n"
+            f"🚫 **过滤规则**: {len(config['block_words'])} 个关键词")
     
-    # 频道配置（从环境变量获取，支持多个源频道）
-    source_channels_env = os.getenv('SOURCE_CHANNELS', '@dashijian09')
-    # 支持多个频道，用逗号分隔
-    source_channels = [chan.strip() for chan in source_channels_env.split(',') if chan.strip()]
+    buttons = [
+        [Button.inline("➕ 增加源频道", b"add_src"), Button.inline("➖ 删除源频道", b"del_src")],
+        [Button.inline("📢 修改广告语", b"edit_ad"), Button.inline("🚫 设置屏蔽词", b"edit_block")],
+        [Button.inline("⏯️ 启动/停止机器人", b"toggle")]
+    ]
+    await client.send_message(chat_id, text, buttons=buttons)
+
+# --- 核心搬运逻辑 ---
+@client.on(events.NewMessage())
+async def handler(event):
+    # 逻辑开关：暂停中或私聊消息不搬运
+    if not config['is_running'] or event.is_private:
+        return
     
-    target_channel = os.getenv('TARGET_CHANNEL', '@SoutheastAsianrevelations')
-    ad_text = os.getenv('AD_TEXT', '欢迎关注 @SoutheastAsianrevelations 获取更多精彩内容！')
+    # 获取发送者信息
+    chat = await event.get_chat()
+    chat_username = f"@{chat.username}" if hasattr(chat, 'username') and chat.username else str(event.chat_id)
     
-    return {
-        'api_id': api_id,
-        'api_hash': api_hash,
-        'bot_token': bot_token,
-        'source_channels': source_channels,
-        'target_channel': target_channel,
-        'ad_text': ad_text
-    }
+    # 匹配源频道
+    if chat_username in config['source_channels']:
+        logger.info(f"📩 收到源频道 {chat_username} 的新消息")
+        
+        text = event.message.text or event.message.caption or ""
+        
+        # 1. 关键词过滤逻辑
+        if config['block_words'] and any(word in text.lower() for word in config['block_words']):
+            logger.info("🚫 命中关键词屏蔽，跳过转发")
+            return
+            
+        # 2. 拼接广告后缀
+        full_text = f"{text}\n\n{config['ad_text']}"
+        
+        try:
+            # 3. 执行转发
+            if event.message.media:
+                await client.send_file(config['target_channel'], event.message.media, caption=full_text)
+            else:
+                await client.send_message(config['target_channel'], full_text)
+            logger.info(f"📤 成功搬运至 {config['target_channel']}")
+        except Exception as e:
+            logger.error(f"❌ 搬运失败，请检查机器人是否为目标频道管理员。错误: {e}")
+
+# --- 按钮与指令交互 ---
+@client.on(events.NewMessage(pattern='/start'))
+async def start(event):
+    if event.is_private:
+        await send_main_menu(event.chat_id)
+
+@client.on(events.CallbackQuery())
+async def callback_query_handler(event):
+    if event.data == b"toggle":
+        config['is_running'] = not config['is_running']
+        await event.answer(f"状态已切换")
+        await send_main_menu(event.chat_id)
+    elif event.data == b"add_src":
+        await event.respond("请直接发送要绑定的频道用户名（如 @chan123）")
 
 async def main():
-    logger.info("🚀 启动 Telegram 频道搬运机器人")
-    
-    # 加载配置
-    config = load_config()
-    
-    logger.info(f"📋 当前配置:")
-    logger.info(f"   源频道: {config['source_channels']}")
-    logger.info(f"   目标频道: {config['target_channel']}")
-    logger.info(f"   广告语: {config['ad_text']}")
-    
-    if not all([config['api_id'], config['api_hash'], config['bot_token']]):
-        logger.error("❌ 请设置环境变量: TG_API_ID, TG_API_HASH, TG_BOT_TOKEN")
-        logger.info("💡 在 Hugging Face Spaces 的 Settings → Repository secrets 中添加:")
-        logger.info("   TG_API_ID: 你的API ID")
-        logger.info("   TG_API_HASH: 你的API Hash")
-        logger.info("   TG_BOT_TOKEN: 你的Bot Token")
-        return
-    
-    # 检查频道配置
-    if not config['source_channels']:
-        logger.error("❌ 请设置源频道")
-        logger.info("💡 添加环境变量 SOURCE_CHANNELS，例如:")
-        logger.info("   SOURCE_CHANNELS: @dashijian09")
-        logger.info("   多个频道用逗号分隔: @channel1,@channel2")
-        return
-    
-    if not config['target_channel']:
-        logger.error("❌ 请设置目标频道")
-        logger.info("💡 添加环境变量 TARGET_CHANNEL，例如:")
-        logger.info("   TARGET_CHANNEL: @SoutheastAsianrevelations")
-        return
-    
-    try:
-        from telethon import TelegramClient, events
-        
-        client = TelegramClient('hf_bot', int(config['api_id']), config['api_hash'])
-        
-        await client.start(bot_token=config['bot_token'])
-        logger.info("✅ Telegram 连接成功")
-        
-        @client.on(events.NewMessage(chats=config['source_channels']))
-        async def handler(event):
-            try:
-                msg = event.message
-                text = msg.text or msg.caption or ""
-                
-                if text:
-                    # 移除链接（可选）
-                    text = re.sub(r'https?://\S+|www\.\S+', '', text)
-                    text = text.strip()
-                    
-                    if text:
-                        # 添加广告
-                        full_text = f"{text}\n\n{config['ad_text']}"
-                        await client.send_message(config['target_channel'], full_text)
-                        logger.info(f"📤 已转发消息到 {config['target_channel']}")
-                
-                elif msg.media:
-                    await client.forward_messages(config['target_channel'], msg)
-                    logger.info(f"📤 已转发媒体到 {config['target_channel']}")
-                    
-            except Exception as e:
-                logger.error(f"❌ 转发失败: {e}")
-        
-        logger.info("=" * 50)
-        logger.info("🤖 机器人配置完成")
-        logger.info(f"👂 正在监听: {len(config['source_channels'])} 个源频道")
-        logger.info(f"🎯 目标频道: {config['target_channel']}")
-        logger.info("⏳ 等待新消息...")
-        logger.info("=" * 50)
-        
-        await client.run_until_disconnected()
-        
-    except Exception as e:
-        logger.error(f"❌ 启动失败: {e}")
-        logger.error("💡 请检查:")
-        logger.error("   1. API凭证是否正确")
-        logger.error("   2. Bot Token是否正确")
-        logger.error("   3. 网络连接是否正常")
+    await client.start(bot_token=BOT_TOKEN)
+    logger.info("✅ 机器人已上线并处于监听状态")
+    await client.run_until_disconnected()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
