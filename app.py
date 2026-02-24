@@ -1,10 +1,10 @@
-import os, asyncio, logging, re
+import os, asyncio, logging, re, sys
 from threading import Thread
 from flask import Flask
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import JoinChannelRequest
 
-# --- 1. 基础配置（已锁定你的 ID: 8119149388） ---
+# --- 1. 基础配置 (已严格锁定你的 ID: 8119149388) ---
 API_ID = 37132348
 API_HASH = 'abeefb9d7f75cff36be8052f9519cb5b'
 BOT_TOKEN = '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA'
@@ -17,20 +17,21 @@ config = {
     "is_running": True, "waiting_action": None 
 }
 
-# --- 2. 核心保活：解决 Port scan timeout 问题 ---
-app = Flask('')
+# --- 2. 强力保活：解决 Render 的红字 Port scan timeout ---
+app = Flask(__name__)
 @app.route('/')
-def home(): return "OK"
+def home(): return "Bot is running perfectly!"
 
 def start_flask():
-    # 强制绑定 Render 环境提供的 PORT，默认为 10000
+    # 强制监听 Render 指定的 PORT
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- 3. 搬运逻辑 ---
-client = TelegramClient('ace_final_stable', API_ID, API_HASH)
+# --- 3. 核心客户端 (针对 DC 迁移优化) ---
+client = TelegramClient('ace_stable_session', API_ID, API_HASH)
 album_cache = {}
 
+# 媒体组处理
 async def handle_album(gid):
     await asyncio.sleep(2)
     msgs = album_cache.pop(gid, [])
@@ -56,18 +57,18 @@ async def forwarder(event):
             await client.send_message(config['target_channel'], txt, file=event.message.media)
     except Exception as e: logging.error(f"搬运异常: {e}")
 
-# --- 4. 管理面板（彻底修复权限弹窗） ---
+# --- 4. 管理面板 (带 ID 自检功能) ---
 async def show_menu(chat_id):
     btns = [[Button.inline("➕ 添加源", b"add_src"), Button.inline("➖ 删除源", b"del_src")],
             [Button.inline("🎯 修改目标", b"edit_target"), Button.inline("📢 广告语", b"edit_ad")],
             [Button.inline("⏯️ 启动/停止", b"toggle")]]
-    await client.send_message(chat_id, f"🤖 **ACE 搬运助手**\n已解锁管理员: `{ADMIN_ID}`", buttons=btns)
+    await client.send_message(chat_id, f"🤖 **ACE 搬运助手**\n已识别管理员: `{ADMIN_ID}`\n如点击没反应，请先发 /start", buttons=btns)
 
 @client.on(events.CallbackQuery())
 async def cb_handler(event):
-    # 这里的 ID 必须完全匹配
+    # 这里的判断会直接在弹窗里告诉你谁在点
     if event.sender_id != ADMIN_ID:
-        return await event.answer(f"⚠️ 权限错误 (你的ID:{event.sender_id})", alert=True)
+        return await event.answer(f"❌ 拒绝! 你的ID是: {event.sender_id}", alert=True)
     
     await event.answer()
     data = event.data.decode()
@@ -76,7 +77,7 @@ async def cb_handler(event):
         await show_menu(event.chat_id)
     else: 
         config['waiting_action'] = data
-        await event.respond("✍️ 请输入内容：")
+        await event.respond("✍️ 身份已确认，请输入内容：")
 
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def input_handler(event):
@@ -89,7 +90,7 @@ async def input_handler(event):
             await client(JoinChannelRequest(event.text.strip()))
             config['source_channels'].append(event.text.strip())
             await event.respond(f"✅ 已添加源: {event.text.strip()}")
-        except: await event.respond("⚠️ 加入频道失败")
+        except: await event.respond("⚠️ 加入失败，请检查频道名")
     elif act == "edit_ad": config['ad_text'] = event.text
     elif act == "edit_target": config['target_channel'] = event.text
     
@@ -100,14 +101,19 @@ async def input_handler(event):
 async def start(event):
     if event.sender_id == ADMIN_ID: await show_menu(event.chat_id)
 
-# --- 5. 启动 ---
+# --- 5. 启动入口 ---
 async def main():
-    # 启动保活 Flask
-    Thread(target=start_flask, daemon=True).start()
-    # 启动机器人
-    await client.start(bot_token=BOT_TOKEN)
-    logging.info("🚀 终极稳定版已上线")
-    await client.run_until_disconnected()
+    # 1. 立即启动 Flask，抢在 Render 扫描前占领端口
+    flask_thread = Thread(target=start_flask, daemon=True)
+    flask_thread.start()
+    
+    # 2. 启动 Telegram 客户端
+    try:
+        await client.start(bot_token=BOT_TOKEN)
+        logging.info("🚀 终极解锁版已上线，管理员: 8119149388")
+        await client.run_until_disconnected()
+    except Exception as e:
+        logging.error(f"启动失败: {e}")
 
 if __name__ == '__main__':
     asyncio.run(main())
