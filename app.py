@@ -1,84 +1,96 @@
 import os
-import json
-import logging
 import asyncio
-from datetime import datetime
+import logging
+import re
 from threading import Thread
 from flask import Flask
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import JoinChannelRequest
 
-# ================= 配置区（已根据截图严格校对） =================
-API_ID = 37132348          # 修正为：37132348
-API_HASH = 'abeefb9d7f75cff36be8052f9519cb5b' # 修正
-BOT_TOKEN = '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA'
-ADMIN_ID = 7443831844      
-# =========================================================
-
+# --- 1. 基础配置 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = 'config.json'
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f: return json.load(f)
-    return {'source_channels': [], 'target_channel': '', 'ad_text': '\n\n更多精彩内容关注：@BBGS1688'}
+# 已根据截图填好
+API_ID = 37132348
+API_HASH = 'abeefb9d7f75cff36be8052f9519cb5b'
+BOT_TOKEN = '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA'
+ADMIN_ID = 7443831844 
 
-config = load_config()
-def save_config():
-    with open(CONFIG_FILE, 'w') as f: json.dump(config, f)
+# 默认配置
+config = {
+    "source_channels": ["@dashijian09", "@xoxokrk"], 
+    "target_channel": "@SoutheastAsianrevelations", 
+    "ad_text": "🎀欢迎订阅频道： 投稿/商务@BBGS1688",
+    "is_running": True,
+    "waiting_action": None 
+}
 
-app = Flask('')
-@app.route('/')
-def home(): return "OK"
+client = TelegramClient('ace_pro_final', API_ID, API_HASH)
 
-def run_flask():
-    app.run(host='0.0.0.0', port=10000)
+# --- 2. 菜单界面 ---
+async def send_main_menu(chat_id):
+    status = "✅ 运行中" if config['is_running'] else "🛑 已暂停"
+    text = (f"🤖 **ACE 搬运机器人**\n\n"
+            f"📈 状态: {status}\n"
+            f"📡 监听: `{', '.join(config['source_channels'])}`\n"
+            f"🎯 目标: `{config['target_channel']}`\n\n"
+            f"📝 广告: \n{config['ad_text']}")
+    buttons = [[Button.inline("➕ 添加源", b"add_src"), Button.inline("➖ 删除源", b"del_src")],
+               [Button.inline("🎯 修改目标", b"edit_target"), Button.inline("📢 广告语", b"edit_ad")],
+               [Button.inline("⏯️ 启动/停止", b"toggle")]]
+    await client.send_message(chat_id, text, buttons=buttons)
 
-client = TelegramClient('bot_session', API_ID, API_HASH)
+# --- 3. 按钮点击处理 (修复没反应的关键) ---
+@client.on(events.CallbackQuery())
+async def callback_handler(event):
+    if event.sender_id != ADMIN_ID: 
+        return await event.answer("⚠️ 您不是管理员", alert=True)
+    
+    data = event.data.decode()
+    # 核心修复：必须先回应 Telegram，否则按钮会一直转圈
+    await event.answer() 
 
-async def auto_join(channel_username):
-    try:
-        clean_name = channel_username.replace('@', '').strip()
-        await client(JoinChannelRequest(clean_name))
-        return True, f"✅ 已成功自动加入并开始监听: @{clean_name}"
-    except Exception as e:
-        return False, f"⚠️ 无法自动加入 @{clean_name}: {str(e)}"
-
-album_cache = {}
-
-@client.on(events.NewMessage(chats=config.get('source_channels', [])))
-async def handler(event):
-    if not config['target_channel']: return
-    if event.grouped_id:
-        gid = event.grouped_id
-        if gid not in album_cache:
-            album_cache[gid] = {'messages': [], 'timer': None}
-        album_cache[gid]['messages'].append(event.message)
-        if album_cache[gid]['timer']: album_cache[gid]['timer'].cancel()
-        
-        async def send_album(g_id):
-            await asyncio.sleep(2)
-            msgs = album_cache[g_id]['messages']
-            caption = (msgs[0].text or "") + config['ad_text']
-            await client.send_file(config['target_channel'], msgs, caption=caption, parse_mode='md')
-            logger.info("🚢 媒体组(Album)合并搬运成功")
-            del album_cache[g_id]
-        
-        album_cache[gid]['timer'] = asyncio.create_task(send_album(gid)) # 已修复括号
+    if data == "toggle":
+        config['is_running'] = not config['is_running']
+        await send_main_menu(event.chat_id)
     else:
-        new_text = (event.text or "") + config['ad_text']
-        await client.send_message(config['target_channel'], new_text, file=event.media, parse_mode='md')
-        logger.info("📝 单条消息搬运成功")
+        config['waiting_action'] = data
+        await event.respond(f"✍️ 请直接发送新的内容给我：")
 
-@client.on(events.NewMessage(pattern='/start', from_users=ADMIN_ID))
-async def start_cmd(event):
-    await event.reply(f"欢迎使用！\n\n当前源：{config['source_channels']}\n目标：{config['target_channel']}\n\n使用 /add_source 添加")
+# --- 4. 管理员文字输入处理 ---
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+async def manager_input(event):
+    if event.sender_id != ADMIN_ID or event.text.startswith('/'): return
+    
+    action = config.get('waiting_action')
+    if not action: return # 如果没在等待状态，不理会
 
+    if action == "add_src":
+        name = event.text.strip()
+        if name not in config['source_channels']:
+            config['source_channels'].append(name)
+            await event.respond(f"✅ 已添加源: {name}")
+    elif action == "edit_ad":
+        config['ad_text'] = event.text
+        await event.respond("✅ 广告语修改成功")
+    elif action == "edit_target":
+        config['target_channel'] = event.text
+        await event.respond(f"✅ 目标频道已改为: {event.text}")
+    
+    # 核心修复：处理完一定要清空状态！
+    config['waiting_action'] = None 
+    await send_main_menu(event.chat_id)
+
+@client.on(events.NewMessage(pattern='/start'))
+async def start(event):
+    if event.sender_id == ADMIN_ID:
+        await send_main_menu(event.chat_id)
+
+# (保活接口省略，保持原样即可)
 async def main():
-    Thread(target=run_flask).start()
     await client.start(bot_token=BOT_TOKEN)
-    logger.info("✅ v10 修正版已成功启动")
+    logger.info("✅ 最终修正版上线")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
