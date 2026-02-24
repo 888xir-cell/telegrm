@@ -1,96 +1,148 @@
-import os, asyncio, logging
+import os
+import asyncio
+import logging
+import re
 from threading import Thread
 from flask import Flask
 from telethon import TelegramClient, events, Button
 
-# --- 1. 配置区 (直接在这里填好，重启也不会丢！) ---
-API_ID, API_HASH = 37132348, 'abeefb9d7f75cff36be8052f9519cb5b'
-BOT_TOKEN = '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA'
-ADMIN_ID = 8119149388  # ✅ 你的主人 ID
+# --- 1. Render 心跳接口 ---
+server = Flask('')
+@server.route('/')
+def home(): return "Bot is Active!" # 用于 UptimeRobot 监控
+def run_flask(): server.run(host='0.0.0.0', port=10000)
 
-# 📝 在这里直接改好你的默认设置
-CONFIG = {
-    "sources": ["@dashijian09", "@xoxokrk"], 
-    "target": "@SoutheastAsianrevelations", 
-    "ad": "🎀欢迎订阅频道： 投稿/商务@BBGS1688",
-    "active": True
+# --- 2. 基础配置 ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+API_ID = int(os.getenv('TG_API_ID', '37132348'))
+API_HASH = os.getenv('TG_API_HASH', 'abeefb9d7f75cff36be8052f9519cb5b')
+BOT_TOKEN = os.getenv('TG_BOT_TOKEN', '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA')
+
+config = {
+    "source_channels": ["@dashijian09", "@xoxokrk"], 
+    "target_channel": "@SoutheastAsianrevelations", 
+    "ad_text": "🎀欢迎订阅频道： 投稿/商务@BBGS1688",
+    "is_running": True,
+    "waiting_action": None 
 }
 
-# --- 2. 暴力保活 (解决 Render 杀进程问题) ---
-app = Flask(__name__)
-@app.route('/')
-def home(): return "OK", 200
+# 媒体组缓冲区：用于存放 grouped_id 消息
+album_cache = {}
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+client = TelegramClient('ace_pro_v10', API_ID, API_HASH)
 
-# 启动保活线程
-Thread(target=run_flask, daemon=True).start()
+# --- 3. 工具函数 ---
+def format_username(input_str):
+    name = input_str.strip().split('t.me/')[-1].replace('@', '')
+    return f"@{name}"
 
-# --- 3. 核心机器人逻辑 ---
-client = TelegramClient('ace_final_v99', API_ID, API_HASH)
+def clean_message_content(text):
+    if not text: return ""
+    lines = text.split('\n')
+    filtered = [l for l in lines if not any(w in l for w in ["关注", "频道", "投稿", ">>"])]
+    return re.sub(r'https?://\S+|t\.me/\S+', '', '\n'.join(filtered)).strip()
 
-def get_menu_text():
-    # 修复“绑定提醒显示”，确保这里直接抓取最新配置
-    status = "✅ 运行中" if CONFIG['active'] else "❌ 已停止"
-    src_str = ", ".join(CONFIG['sources']) if CONFIG['sources'] else "未设置"
-    return (f"🤖 **ACE 搬运控制台 (配置已锁定)**\n\n"
-            f"📈 状态: {status}\n"
-            f"📡 监听: `{src_str}`\n"
-            f"🎯 目标: `{CONFIG['target']}`\n\n"
-            f"📝 广告语: \n{CONFIG['ad']}")
-
+# --- 4. 菜单界面 ---
 async def send_main_menu(chat_id):
-    btns = [[Button.inline("➕ 添加源", b"add"), Button.inline("➖ 清空源", b"clear")],
-            [Button.inline("🎯 修改目标", b"target"), Button.inline("📢 修改广告", b"ad")],
-            [Button.inline("⏯️ 启动/停止", b"toggle")]]
-    await client.send_message(chat_id, get_menu_text(), buttons=btns)
+    status = "✅ 运行中" if config['is_running'] else "🛑 已暂停"
+    text = (f"🤖 **ACE 搬运机器人 (媒体组增强版)**\n\n"
+            f"📈 状态: {status}\n"
+            f"📡 监听: `{', '.join(config['source_channels'])}`\n"
+            f"🎯 目标: `{config['target_channel']}`\n\n"
+            f"📝 广告: \n{config['ad_text']}")
+    buttons = [[Button.inline("➕ 添加源", b"add_src"), Button.inline("➖ 删除源", b"del_src")],
+               [Button.inline("🎯 修改目标", b"edit_target"), Button.inline("📢 广告语", b"edit_ad")],
+               [Button.inline("⏯️ 启动/停止", b"toggle")]]
+    await client.send_message(chat_id, text, buttons=buttons)
 
+# --- 5. 核心搬运逻辑 (处理 Album 媒体组) ---
+@client.on(events.NewMessage())
+async def forwarder(event):
+    if not config['is_running'] or event.is_private: return
+    
+    try:
+        chat = await event.get_chat()
+        current_chat = f"@{chat.username}" if hasattr(chat, 'username') and chat.username else str(event.chat_id)
+        
+        if current_chat in config['source_channels']:
+            # 处理媒体组 (Album)
+            if event.message.grouped_id:
+                gid = event.message.grouped_id
+                if gid not in album_cache:
+                    album_cache[gid] = []
+                    # 开启异步缓冲，等待 2 秒收集所有图片
+                    asyncio.create_task(handle_album(gid, event.chat_id))
+                album_cache[gid].append(event.message)
+                return # 缓冲中，暂时不发送
+
+            # 处理普通单条消息
+            raw_text = event.message.message or getattr(event.message, 'caption', "")
+            final_text = f"{clean_message_content(raw_text)}\n\n{config['ad_text']}"
+            
+            if event.message.media:
+                await client.send_file(config['target_channel'], event.message.media, caption=final_text, parse_mode='md')
+            else:
+                await client.send_message(config['target_channel'], final_text, parse_mode='md')
+            logger.info(f"📤 单条搬运成功: {current_chat}")
+            
+    except Exception as e:
+        logger.error(f"❌ 搬运报错: {e}")
+
+async def handle_album(gid, chat_id):
+    """处理并合并媒体组发送"""
+    await asyncio.sleep(2) # 等待 2 秒让消息收齐
+    messages = album_cache.pop(gid, [])
+    if not messages: return
+
+    # 提取文案：通常媒体组的文案在第一张图
+    caption = ""
+    for msg in messages:
+        if msg.message or getattr(msg, 'caption', ""):
+            caption = msg.message or getattr(msg, 'caption', "")
+            break
+    
+    final_text = f"{clean_message_content(caption)}\n\n{config['ad_text']}"
+    
+    # 合并发送：只有第一张图带文案，其余图片作为组发送
+    await client.send_file(config['target_channel'], messages, caption=final_text, parse_mode='md')
+    logger.info(f"📤 媒体组(Album)合并搬运成功")
+
+# --- 6. 管理员输入处理 ---
 @client.on(events.CallbackQuery())
-async def cb_handler(event):
-    if event.sender_id != ADMIN_ID:
-        return await event.answer("❌ 你不是管理员", alert=True)
-    
+async def callback_handler(event):
     data = event.data.decode()
-    await event.answer()
-    
     if data == "toggle":
-        CONFIG['active'] = not CONFIG['active']
-        await event.edit(get_menu_text(), buttons=event.reply_markup)
-    elif data == "clear":
-        CONFIG['sources'] = []
-        await event.edit(get_menu_text(), buttons=event.reply_markup)
-    else:
-        # 进入输入模式
-        event.sender.waiting_for = data
-        await event.respond(f"✍️ 请输入要修改的内容：")
+        config['is_running'] = not config['is_running']
+        await send_main_menu(event.chat_id)
+    elif data in ["edit_ad", "add_src", "del_src", "edit_target"]:
+        config['waiting_action'] = data
+        await event.respond("✍️ 请输入相应内容：")
 
-@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
-async def input_handler(event):
-    if event.sender_id != ADMIN_ID or event.text.startswith('/'): return
-    
-    mode = getattr(event.sender, 'waiting_for', None)
-    if not mode: return
-    
-    if mode == "add": CONFIG['sources'].append(event.text.strip())
-    elif mode == "target": CONFIG['target'] = event.text.strip()
-    elif mode == "ad": CONFIG['ad'] = event.text.strip()
-    
-    event.sender.waiting_for = None
-    await event.respond("✅ 设置已同步！")
+@client.on(events.NewMessage())
+async def manager_input(event):
+    if not event.is_private or event.text.startswith('/'): return
+    action = config.get('waiting_action')
+    if not action: return
+
+    if action == "edit_ad": config['ad_text'] = event.text
+    elif action == "add_src": 
+        new_src = format_username(event.text)
+        if new_src not in config['source_channels']: config['source_channels'].append(new_src)
+    elif action == "edit_target": config['target_channel'] = format_username(event.text)
+            
+    config['waiting_action'] = None
     await send_main_menu(event.chat_id)
 
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
-    if event.sender_id == ADMIN_ID:
-        await send_main_menu(event.chat_id)
+    if event.is_private: await send_main_menu(event.chat_id)
 
-# --- 4. 启动 ---
 async def main():
-    print("🛰️ 正在强制连接 Telegram...")
+    Thread(target=run_flask).start()
     await client.start(bot_token=BOT_TOKEN)
-    print("✅ 机器人已完全就绪！")
+    logger.info("✅ v10 媒体组增强版上线")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
