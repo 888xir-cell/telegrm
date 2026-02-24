@@ -3,88 +3,94 @@ from threading import Thread
 from flask import Flask
 from telethon import TelegramClient, events, Button
 
-# --- 1. 基础配置 ---
+# --- 1. 配置区 (直接在这里填好，重启也不会丢！) ---
 API_ID, API_HASH = 37132348, 'abeefb9d7f75cff36be8052f9519cb5b'
 BOT_TOKEN = '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA'
-ADMIN_ID = 8119149388 
+ADMIN_ID = 8119149388  # ✅ 你的主人 ID
 
-# 🔥 核心补救：手动把你的配置写死在代码里，这样重启也不会丢了
-config = {
-    "source_channels": ["@dashijian09", "@xoxokrk"], # 在这里直接改，重启也有效
-    "target_channel": "@SoutheastAsianrevelations", 
-    "ad_text": "🎀欢迎订阅频道： 投稿/商务@BBGS1688",
-    "is_running": True, "waiting_action": None 
+# 📝 在这里直接改好你的默认设置
+CONFIG = {
+    "sources": ["@dashijian09", "@xoxokrk"], 
+    "target": "@SoutheastAsianrevelations", 
+    "ad": "🎀欢迎订阅频道： 投稿/商务@BBGS1688",
+    "active": True
 }
 
-# --- 2. 强力保活 ---
+# --- 2. 暴力保活 (解决 Render 杀进程问题) ---
 app = Flask(__name__)
 @app.route('/')
-def h(): return "LIVE", 200
+def home(): return "OK", 200
 
-def run_web():
+def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
 
-Thread(target=run_web, daemon=True).start()
+# 启动保活线程
+Thread(target=run_flask, daemon=True).start()
 
-# --- 3. 机器人逻辑 ---
-client = TelegramClient('ace_stable_v20', API_ID, API_HASH)
+# --- 3. 核心机器人逻辑 ---
+client = TelegramClient('ace_final_v99', API_ID, API_HASH)
 
-def get_panel_text():
-    # 修复你说的“绑定提醒显示”，确保这里显示的是最新设置
-    status = "✅ 运行中" if config['is_running'] else "❌ 已停止"
-    sources = ", ".join(config['source_channels'])
-    return (f"🤖 **ACE 搬运助手 (已修复版)**\n\n"
+def get_menu_text():
+    # 修复“绑定提醒显示”，确保这里直接抓取最新配置
+    status = "✅ 运行中" if CONFIG['active'] else "❌ 已停止"
+    src_str = ", ".join(CONFIG['sources']) if CONFIG['sources'] else "未设置"
+    return (f"🤖 **ACE 搬运控制台 (配置已锁定)**\n\n"
             f"📈 状态: {status}\n"
-            f"📡 监听: `{sources}`\n"
-            f"🎯 目标: `{config['target_channel']}`\n\n"
-            f"📝 广告: {config['ad_text']}")
+            f"📡 监听: `{src_str}`\n"
+            f"🎯 目标: `{CONFIG['target']}`\n\n"
+            f"📝 广告语: \n{CONFIG['ad']}")
 
-async def show_menu(chat_id):
-    btns = [[Button.inline("➕ 添加源", b"add_src"), Button.inline("➖ 清空源", b"clear_src")],
-            [Button.inline("🎯 修改目标", b"edit_target"), Button.inline("📢 广告语", b"edit_ad")],
+async def send_main_menu(chat_id):
+    btns = [[Button.inline("➕ 添加源", b"add"), Button.inline("➖ 清空源", b"clear")],
+            [Button.inline("🎯 修改目标", b"target"), Button.inline("📢 修改广告", b"ad")],
             [Button.inline("⏯️ 启动/停止", b"toggle")]]
-    await client.send_message(chat_id, get_panel_text(), buttons=btns)
+    await client.send_message(chat_id, get_menu_text(), buttons=btns)
 
 @client.on(events.CallbackQuery())
 async def cb_handler(event):
-    if event.sender_id != ADMIN_ID: return
-    await event.answer()
+    if event.sender_id != ADMIN_ID:
+        return await event.answer("❌ 你不是管理员", alert=True)
+    
     data = event.data.decode()
+    await event.answer()
     
     if data == "toggle":
-        config['is_running'] = not config['is_running']
-        await event.edit(get_panel_text(), buttons=event.reply_markup)
-    elif data == "clear_src":
-        config['source_channels'] = []
-        await event.edit(get_panel_text(), buttons=event.reply_markup)
+        CONFIG['active'] = not CONFIG['active']
+        await event.edit(get_menu_text(), buttons=event.reply_markup)
+    elif data == "clear":
+        CONFIG['sources'] = []
+        await event.edit(get_menu_text(), buttons=event.reply_markup)
     else:
-        config['waiting_action'] = data
-        await event.respond(f"✍️ 请输入要更新的内容：\n(当前操作: {data})")
+        # 进入输入模式
+        event.sender.waiting_for = data
+        await event.respond(f"✍️ 请输入要修改的内容：")
 
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def input_handler(event):
-    if event.sender_id != ADMIN_ID or not config['waiting_action']: return
+    if event.sender_id != ADMIN_ID or event.text.startswith('/'): return
     
-    val = event.text.strip()
-    if config['waiting_action'] == "add_src":
-        config['source_channels'].append(val)
-    elif config['waiting_action'] == "edit_target":
-        config['target_channel'] = val
-    elif config['waiting_action'] == "edit_ad":
-        config['ad_text'] = val
-        
-    config['waiting_action'] = None
-    await event.respond("✅ 设置已保存！新配置如下：")
-    await show_menu(event.chat_id)
+    mode = getattr(event.sender, 'waiting_for', None)
+    if not mode: return
+    
+    if mode == "add": CONFIG['sources'].append(event.text.strip())
+    elif mode == "target": CONFIG['target'] = event.text.strip()
+    elif mode == "ad": CONFIG['ad'] = event.text.strip()
+    
+    event.sender.waiting_for = None
+    await event.respond("✅ 设置已同步！")
+    await send_main_menu(event.chat_id)
 
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
-    if event.sender_id == ADMIN_ID: await show_menu(event.chat_id)
+    if event.sender_id == ADMIN_ID:
+        await send_main_menu(event.chat_id)
 
-# --- 启动 ---
+# --- 4. 启动 ---
 async def main():
+    print("🛰️ 正在强制连接 Telegram...")
     await client.start(bot_token=BOT_TOKEN)
+    print("✅ 机器人已完全就绪！")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
