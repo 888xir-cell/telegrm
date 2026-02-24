@@ -8,11 +8,11 @@ from flask import Flask
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
 
-# ================= 配置区（请务必修改这里） =================
-API_ID = 1234567           # 填入你的 API ID (数字)
-API_HASH = 'your_hash'     # 填入你的 API HASH (字符串)
-BOT_TOKEN = 'your_token'   # 填入你的 Bot Token
-ADMIN_ID = 12345678        # 填入你的 Telegram 数字 ID
+# ================= 配置区（已根据截图为你填好） =================
+API_ID = 37132488          # 已填入
+API_HASH = 'abeefb9d7f75cff36be8052f9519cb5b' # 已填入
+BOT_TOKEN = '7968296089:AAGknOWEh9q_3JO5DBGrWNPH-C9TlrWHnIA' # 已填入
+ADMIN_ID = 7443831844      # 请确保这是你的正确数字ID
 # =========================================================
 
 # 初始化日志
@@ -68,11 +68,45 @@ async def handler(event):
         if album_cache[gid]['timer']: album_cache[gid]['timer'].cancel()
         
         async def send_album(g_id):
-            await asyncio.sleep(2) # 等待2秒确保收集齐所有图片
+            await asyncio.sleep(2) 
             msgs = album_cache[g_id]['messages']
             caption = (msgs[0].text or "") + config['ad_text']
             await client.send_file(config['target_channel'], msgs, caption=caption, parse_mode='md')
             logger.info("🚢 媒体组(Album)合并搬运成功")
             del album_cache[g_id]
             
-        album_cache[gid]['timer'] = asyncio.create_task(send_album
+        album_cache[gid]['timer'] = asyncio.create_task(send_album(gid))
+    else:
+        new_text = (event.text or "") + config['ad_text']
+        await client.send_message(config['target_channel'], new_text, file=event.media, parse_mode='md')
+        logger.info("📝 单条消息搬运成功")
+
+# 管理菜单
+@client.on(events.NewMessage(pattern='/start', from_users=ADMIN_ID))
+async def start_cmd(event):
+    await event.reply("欢迎使用搬运助手！\n\n当前源频道：" + str(config['source_channels']) + 
+                     "\n目标频道：" + str(config['target_channel']) + 
+                     "\n\n使用 /add_source 添加搬运来源")
+
+@client.on(events.NewMessage(pattern='/add_source', from_users=ADMIN_ID))
+async def add_source(event):
+    async with client.conversation(event.chat_id) as conv:
+        await conv.send_message("请输入要搬运的源频道用户名（带@）：")
+        res = await conv.get_response()
+        name = res.text.strip()
+        
+        success, msg = await auto_join(name)
+        await conv.send_message(msg)
+        
+        if name not in config['source_channels']:
+            config['source_channels'].append(name)
+            save_config()
+
+async def main():
+    Thread(target=run_flask).start()
+    await client.start(bot_token=BOT_TOKEN)
+    logger.info("✅ v10 增强版上线，心跳保活已就绪")
+    await client.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())
